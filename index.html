@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#05060a" />
+    <meta name="description" content="Ghost Cube 3D — un cubo Rubik fantasma interactivo en negro y azul. Gíralo, muévelo y resuélvelo con un clic." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Ghost Cube 3D</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="loading-screen">
+        <div class="loading-cube">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <p id="loading-text">Preparando el Ghost Cube…</p>
+      </div>
+
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div class="brand-text">
+            <h1>Ghost Cube <span>3D</span></h1>
+            <p>Cubo fantasma interactivo · negro &amp; azul</p>
+          </div>
+        </div>
+        <button id="toggle-panel" class="icon-btn" aria-label="Mostrar/ocultar panel" aria-expanded="true">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+        </button>
+      </header>
+
+      <main class="stage">
+        <div id="scene-container">
+          <canvas id="cube-canvas"></canvas>
+          <div class="hint" id="hint-text">Arrastra el <b>fondo</b> para rotar la vista · arrastra una <b>pieza</b> para girar esa capa</div>
+          <div class="badge-status" id="status-badge">Mezclado</div>
+        </div>
+
+        <aside class="panel" id="side-panel">
+          <section class="panel-block">
+            <h2>Controles</h2>
+            <div class="btn-row">
+              <button id="btn-scramble" class="btn btn-secondary">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17 3h4v4h-2V6.41l-3.29 3.3-1.42-1.42L17.59 5H17V3zM3 3h4v2h-.59l3.3 3.29-1.42 1.42L5 6.41V7H3V3zm0 14h2v.59l3.29-3.3 1.42 1.42L6.41 19H7v2H3v-4zm18 4h-4v-2h.59l-3.3-3.29 1.42-1.42L19 17.59V17h2v4z"/></svg>
+                Mezclar
+              </button>
+              <button id="btn-solve" class="btn btn-primary" disabled>
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                Resolver
+              </button>
+            </div>
+            <div class="btn-row">
+              <button id="btn-reset" class="btn btn-ghost">Reiniciar</button>
+              <button id="btn-stop" class="btn btn-ghost" hidden>Detener</button>
+            </div>
+            <p class="solver-status" id="solver-status">Cargando solucionador…</p>
+          </section>
+
+          <section class="panel-block stats">
+            <div class="stat">
+              <span class="stat-value" id="stat-moves">0</span>
+              <span class="stat-label">Movimientos</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value" id="stat-timer">00:00</span>
+              <span class="stat-label">Tiempo</span>
+            </div>
+          </section>
+
+          <section class="panel-block log-block">
+            <h2>Pasos de la solución</h2>
+            <p class="log-empty" id="log-empty">Pulsa <b>Resolver</b> y aquí aparecerá, paso a paso, el algoritmo que usa el cubo para resolverse solo.</p>
+            <ol class="move-log" id="move-log"></ol>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
