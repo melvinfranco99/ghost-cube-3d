@@ -1,85 +1,173 @@
 import * as THREE from "three";
-import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 
 // ---------------------------------------------------------------------------
 // Ghost Cube geometry
 //
-// A Ghost Cube turns exactly like a normal 3x3x3 (same layers, same
-// permutations) — what makes it a "ghost" is that every piece's visible
-// panel sits on a small raised platform that is pushed outward and twisted
-// around the face normal by an amount that depends on which of the 9 cells
-// of that face the piece occupies. Assembled correctly the platforms form a
-// four-armed spiral relief (see reference photos); once scrambled, pieces
-// carry their own platform height/twist to the wrong slot, so neighbouring
-// panels no longer line up and the whole cube reads as a jagged, spiky
-// shape instead of a cube. Because that platform geometry is baked onto
-// each cubie at creation time (not recomputed per move), moveEngine.js and
-// interaction.js need no changes: they only ever reposition/rotate the
-// existing cubie groups.
+// A real Ghost Cube turns exactly like a normal 3x3x3 (same layers, same
+// permutations) but its 26 pieces are NOT simple cubes: each of the 4
+// boundary planes per axis (the two outer faces and the two internal layer
+// splits) is a flat plane tilted by its own amount instead of a plain
+// axis-aligned plane — as if every layer had been frozen mid-turn at a
+// slightly different angle. Every piece is the solid bounded by 6 such
+// tilted planes (2 per axis), so its faces are irregular quadrilaterals,
+// not squares.
+//
+// Because a boundary plane is literally shared, continuous geometry between
+// the two layers it separates, pieces that are correctly placed AND
+// correctly oriented butt up against their neighbours with no seam at all —
+// the whole assembly reads as a perfect cube. A piece carries its own
+// tilted faces wherever it goes, though: once scrambled into the wrong slot
+// or orientation, its faces are tilted the "wrong way" relative to its new
+// neighbours, so the surface stops lining up and the cube reads as an
+// irregular, jagged solid — exactly the reference photos' look.
+//
+// This geometry is baked per piece once, at creation time; moveEngine.js and
+// interaction.js don't need to know about any of it — they only ever
+// reposition/rotate the resulting cubie groups, exactly as for a normal cube.
 // ---------------------------------------------------------------------------
 
-const CUBIE_SIZE = 0.94;
-const HALF = CUBIE_SIZE / 2;
+const GAP_SCALE = 0.93; // shrink each piece toward its own center for visible seams
+const PANEL_INSET = 0.72; // sticker size relative to its full facet
+const PANEL_LIFT = 0.014; // sticker sits just above the plastic facet
 
-const RISER_SIZE = 0.8;
-const RISER_THICK = 0.055;
-const STICKER_SIZE = 0.7;
-const STICKER_THICK = 0.032;
-
-const LEVEL_STEP = 0.095; // extra outward push per pinwheel level
-const TWIST_STEP = THREE.MathUtils.degToRad(10); // extra in-plane twist per level
+// The 4 boundary planes per axis, at nominal positions -1.5, -0.5, 0.5, 1.5
+// (outer, inner, inner, outer). Each is tilted by (t, s) against the other
+// two axes' coordinates — e.g. for an X boundary, x = NOMINAL + t*y + s*z.
+// Every axis reuses this same table (with its own cyclic argument order),
+// so the four "arms" of the puzzle twist in a consistent, distinguishable way.
+const NOMINAL = [-1.5, -0.5, 0.5, 1.5];
+const BOUNDARY_TILT = [
+  { t: 0.09, s: 0.03 },
+  { t: -0.06, s: 0.08 },
+  { t: 0.06, s: -0.08 },
+  { t: -0.09, s: -0.03 },
+];
 
 const BODY_COLOR = 0x1f5fe0; // ghost-cube blue plastic body/frame
-const PANEL_COLOR = 0x0a0a0d; // near-black carbon-fiber panel
+const PANEL_COLOR = 0x0a0a0d; // near-black carbon-fiber sticker
 
-const FACE_TRANSFORM = {
-  px: { normal: [1, 0, 0], rotation: [0, Math.PI / 2, 0] },
-  nx: { normal: [-1, 0, 0], rotation: [0, -Math.PI / 2, 0] },
-  py: { normal: [0, 1, 0], rotation: [-Math.PI / 2, 0, 0] },
-  ny: { normal: [0, -1, 0], rotation: [Math.PI / 2, 0, 0] },
-  pz: { normal: [0, 0, 1], rotation: [0, 0, 0] },
-  nz: { normal: [0, 0, -1], rotation: [0, Math.PI, 0] },
-};
-
-const AXIS_SIGN_TO_DIR = {
-  "x,1": "px",
-  "x,-1": "nx",
-  "y,1": "py",
-  "y,-1": "ny",
-  "z,1": "pz",
-  "z,-1": "nz",
-};
-
-// Four-armed pinwheel: the center cell and one whole arm (a corner + its
-// neighbouring edge cell) sit flush (level 0); the other three arms step
-// up around the face in a consistent sweep.
-function pinwheelLevel(u, v) {
-  if (u === 0 && v === 0) return 0;
-  if (u === -1 && v === -1) return 0;
-  if (u === 0 && v === -1) return 0;
-  if (u === 1 && v === -1) return 1;
-  if (u === 1 && v === 0) return 1;
-  if (u === 1 && v === 1) return 2;
-  if (u === 0 && v === 1) return 2;
-  return 3; // (-1, 1) and (-1, 0)
+function det3(a1, b1, c1, a2, b2, c2, a3, b3, c3) {
+  return a1 * (b2 * c3 - c2 * b3) - b1 * (a2 * c3 - c2 * a3) + c1 * (a2 * b3 - b2 * a3);
 }
 
-// In-face (u, v) grid coordinates for a cubie's face on a given axis — the
-// two grid coordinates other than the face's own axis, fixed order per axis.
-function faceUV(axis, x, y, z) {
-  if (axis === "x") return [y, z];
-  if (axis === "y") return [z, x];
-  return [x, y];
+// Solves the 3x3 linear system given by three plane rows [a, b, c, d] each
+// meaning a*x + b*y + c*z = d, i.e. finds the point where 3 planes meet.
+function intersectPlanes(r1, r2, r3) {
+  const [a1, b1, c1, d1] = r1;
+  const [a2, b2, c2, d2] = r2;
+  const [a3, b3, c3, d3] = r3;
+  const D = det3(a1, b1, c1, a2, b2, c2, a3, b3, c3);
+  const Dx = det3(d1, b1, c1, d2, b2, c2, d3, b3, c3);
+  const Dy = det3(a1, d1, c1, a2, d2, c2, a3, d3, c3);
+  const Dz = det3(a1, b1, d1, a2, b2, d2, a3, b3, d3);
+  return new THREE.Vector3(Dx / D, Dy / D, Dz / D);
 }
 
-function placeOnFace(mesh, dirKey, distance, twist) {
-  const t = FACE_TRANSFORM[dirKey];
-  mesh.position.set(t.normal[0] * distance, t.normal[1] * distance, t.normal[2] * distance);
-  mesh.rotation.set(...t.rotation);
-  mesh.rotateZ(twist);
+// x = NOMINAL[k] + t*y + s*z  ->  1*x - t*y - s*z = NOMINAL[k]
+function xRow(k) {
+  const { t, s } = BOUNDARY_TILT[k];
+  return [1, -t, -s, NOMINAL[k]];
+}
+// y = NOMINAL[k] + t*z + s*x
+function yRow(k) {
+  const { t, s } = BOUNDARY_TILT[k];
+  return [-s, 1, -t, NOMINAL[k]];
+}
+// z = NOMINAL[k] + t*x + s*y
+function zRow(k) {
+  const { t, s } = BOUNDARY_TILT[k];
+  return [-t, -s, 1, NOMINAL[k]];
 }
 
-// Procedural carbon-fiber-style weave so the panels read as the reference
+// The 8 corners of the solid bounded by the piece's 6 tilted boundary
+// planes, expressed in the cubie's own local space (i.e. already shifted
+// back by its grid position), keyed "abc" with a/b/c = 0 (low side) or 1
+// (high side) along x/y/z respectively.
+function pieceCorners(ix, iy, iz) {
+  const kx = [ix + 1, ix + 2];
+  const ky = [iy + 1, iy + 2];
+  const kz = [iz + 1, iz + 2];
+  const corners = {};
+  for (const a of [0, 1]) {
+    for (const b of [0, 1]) {
+      for (const c of [0, 1]) {
+        const p = intersectPlanes(xRow(kx[a]), yRow(ky[b]), zRow(kz[c]));
+        p.sub(new THREE.Vector3(ix, iy, iz));
+        corners[`${a}${b}${c}`] = p;
+      }
+    }
+  }
+  return corners;
+}
+
+// Winds 4 (assumed coplanar) points so the face normal points away from
+// `centroid`, then appends the two triangles to positions/uvs.
+function pushOutwardQuad(positions, uvs, p0, p1, p2, p3, centroid) {
+  const normal = new THREE.Vector3().subVectors(p1, p0).cross(new THREE.Vector3().subVectors(p2, p0));
+  const faceCenter = new THREE.Vector3().add(p0).add(p1).add(p2).add(p3).multiplyScalar(0.25);
+  const outward = new THREE.Vector3().subVectors(faceCenter, centroid);
+  const order = normal.dot(outward) < 0 ? [p0, p3, p2, p1] : [p0, p1, p2, p3];
+  const [q0, q1, q2, q3] = order;
+  positions.push(
+    q0.x, q0.y, q0.z, q1.x, q1.y, q1.z, q2.x, q2.y, q2.z,
+    q0.x, q0.y, q0.z, q2.x, q2.y, q2.z, q3.x, q3.y, q3.z
+  );
+  uvs.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
+  return { order, faceCenter, normal: normal.normalize() };
+}
+
+const FACE_DEFS = [
+  { axis: "x", side: "lo", pts: ["000", "010", "011", "001"] },
+  { axis: "x", side: "hi", pts: ["100", "101", "111", "110"] },
+  { axis: "y", side: "lo", pts: ["000", "001", "101", "100"] },
+  { axis: "y", side: "hi", pts: ["010", "110", "111", "011"] },
+  { axis: "z", side: "lo", pts: ["000", "100", "110", "010"] },
+  { axis: "z", side: "hi", pts: ["001", "011", "111", "101"] },
+];
+
+function buildPieceGeometry(ix, iy, iz) {
+  const raw = pieceCorners(ix, iy, iz);
+  const keys = Object.keys(raw);
+  const centroid = new THREE.Vector3();
+  for (const k of keys) centroid.add(raw[k]);
+  centroid.multiplyScalar(1 / keys.length);
+
+  const shrunk = {};
+  for (const k of keys) {
+    shrunk[k] = raw[k].clone().sub(centroid).multiplyScalar(GAP_SCALE).add(centroid);
+  }
+
+  const positions = [];
+  const uvs = [];
+  const groups = [];
+
+  const grid = { x: ix, y: iy, z: iz };
+  for (const def of FACE_DEFS) {
+    const exterior = grid[def.axis] === (def.side === "lo" ? -1 : 1);
+    const pts = def.pts.map((k) => shrunk[k]);
+    const bodyStart = positions.length / 3;
+    const { faceCenter, normal } = pushOutwardQuad(positions, uvs, pts[0], pts[1], pts[2], pts[3], centroid);
+    groups.push({ start: bodyStart, count: 6, materialIndex: 0 });
+
+    if (exterior) {
+      const inset = pts.map((p) =>
+        p.clone().sub(faceCenter).multiplyScalar(PANEL_INSET).add(faceCenter).addScaledVector(normal, PANEL_LIFT)
+      );
+      const panelStart = positions.length / 3;
+      pushOutwardQuad(positions, uvs, inset[0], inset[1], inset[2], inset[3], centroid);
+      groups.push({ start: panelStart, count: 6, materialIndex: 1 });
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  for (const g of groups) geometry.addGroup(g.start, g.count, g.materialIndex);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+// Procedural carbon-fiber-style weave so the stickers read as the reference
 // photos' material instead of flat plastic.
 function buildCarbonTexture() {
   const size = 128;
@@ -91,26 +179,16 @@ function buildCarbonTexture() {
   const weave = 8;
   for (let gy = 0; gy < size; gy += weave) {
     for (let gx = 0; gx < size; gx += weave) {
-      const alt = ((gx / weave) % 2) === ((gy / weave) % 2);
+      const alt = (gx / weave) % 2 === (gy / weave) % 2;
       ctx.fillStyle = alt ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.3)";
       ctx.fillRect(gx, gy, weave, weave);
     }
   }
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(2, 2);
+  tex.repeat.set(1, 1);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
-}
-
-function buildBodyGeometry() {
-  return new RoundedBoxGeometry(CUBIE_SIZE, CUBIE_SIZE, CUBIE_SIZE, 3, 0.09);
-}
-function buildRiserGeometry() {
-  return new RoundedBoxGeometry(RISER_SIZE, RISER_SIZE, RISER_THICK, 2, 0.05);
-}
-function buildStickerGeometry() {
-  return new RoundedBoxGeometry(STICKER_SIZE, STICKER_SIZE, STICKER_THICK, 2, 0.05);
 }
 
 export function createCube3D() {
@@ -118,18 +196,14 @@ export function createCube3D() {
   const cubies = [];
   const raycastTargets = [];
 
-  const bodyGeometry = buildBodyGeometry();
   const bodyMaterial = new THREE.MeshPhysicalMaterial({
     color: BODY_COLOR,
     roughness: 0.4,
     metalness: 0.12,
-    clearcoat: 0.55,
+    clearcoat: 0.5,
     clearcoatRoughness: 0.3,
     envMapIntensity: 1.0,
   });
-
-  const riserGeometry = buildRiserGeometry();
-  const stickerGeometry = buildStickerGeometry();
   const panelMaterial = new THREE.MeshPhysicalMaterial({
     color: PANEL_COLOR,
     map: buildCarbonTexture(),
@@ -148,39 +222,11 @@ export function createCube3D() {
         cubie.position.set(x, y, z);
         cubie.userData.gridPos = new THREE.Vector3(x, y, z);
 
-        const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-        body.userData.cubie = cubie;
-        cubie.add(body);
-        raycastTargets.push(body);
-
-        for (const [axis, sign] of [
-          ["x", x],
-          ["y", y],
-          ["z", z],
-        ]) {
-          if (sign === 0) continue;
-          const dir = AXIS_SIGN_TO_DIR[`${axis},${sign}`];
-          const [u, v] = faceUV(axis, x, y, z);
-          const level = pinwheelLevel(u, v);
-          const twist = level * TWIST_STEP;
-
-          const riser = new THREE.Mesh(riserGeometry, bodyMaterial);
-          placeOnFace(riser, dir, HALF + RISER_THICK / 2 + level * LEVEL_STEP, twist);
-          riser.userData.cubie = cubie;
-          cubie.add(riser);
-          raycastTargets.push(riser);
-
-          const sticker = new THREE.Mesh(stickerGeometry, panelMaterial);
-          placeOnFace(
-            sticker,
-            dir,
-            HALF + RISER_THICK + STICKER_THICK / 2 + level * LEVEL_STEP,
-            twist
-          );
-          sticker.userData.cubie = cubie;
-          cubie.add(sticker);
-          raycastTargets.push(sticker);
-        }
+        const geometry = buildPieceGeometry(x, y, z);
+        const mesh = new THREE.Mesh(geometry, [bodyMaterial, panelMaterial]);
+        mesh.userData.cubie = cubie;
+        cubie.add(mesh);
+        raycastTargets.push(mesh);
 
         group.add(cubie);
         cubies.push(cubie);
