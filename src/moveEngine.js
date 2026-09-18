@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import Cube from "cubejs";
+import Cube from "./cubeSolver.js";
 import { FACES, parseMoveToken, expandMove } from "./movesMeta.js";
 
 function easeInOutQuad(t) {
